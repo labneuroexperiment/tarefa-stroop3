@@ -47,7 +47,7 @@ const ITI_MS = 500
 const LAB_PASSWORD = 'stroop3laps2026'
 
 // IMPORTANTE: Substituir pela URL do Google Apps Script após deploy
-const GOOGLE_SCRIPT_URL = 'YOUR_GOOGLE_SCRIPT_URL_HERE'
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzIup_FP4wEz-S1Ib17Yh5m6Nb9NGoIz-tMofNtcCHAIE4OTXOA07G0AxpDGWOswT3tMg/exec'
 const TCLE_DOWNLOAD_URL = 'https://drive.google.com/file/d/1aYWCp-0LnoRaFPmdZiuzPQh08AA1pw0I/view?usp=sharing'
 
 /* ===================== APP ===================== */
