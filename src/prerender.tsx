@@ -1,7 +1,5 @@
 import App from '@/App.tsx'
-import { createHead, UnheadProvider } from '@unhead/react/server'
 import { renderToString } from 'react-dom/server'
-import { StaticRouter } from 'react-router-dom/server'
 
 interface PrerenderData {
   url: string
@@ -12,47 +10,20 @@ type PrerenderResult = string | {
   head?: {
     lang?: string
     title?: string
-    elements?: Set<{
-      type: string
-      props: Record<string, string>
-      children?: string
-    }>
   }
   links?: Set<string> | string[]
 } | null | undefined
 
 export async function prerender(data: PrerenderData): Promise<PrerenderResult> {
   try {
-    const head = createHead({
-      disableDefaults: true,
-    })
-
-    const html = renderToString(
-      <UnheadProvider value={head}>
-        <StaticRouter location={data.url}>
-          <App />
-        </StaticRouter>
-      </UnheadProvider>,
-    )
-
-    const headTags = await head.resolveTags()
-    const lang = headTags.find(tag => tag.tag === 'htmlAttrs')?.props.lang
-    const title = headTags.find(tag => tag.tag === 'title')?.textContent
-    const elements = headTags
-      .filter(tag => tag.tag !== 'htmlAttrs' && tag.tag !== 'title')
-      .map(tag => ({
-        type: tag.tag,
-        props: tag.props,
-        children: tag.textContent,
-      }))
+    const html = renderToString(<App />)
 
     return {
       html,
       links: ['/'],
       head: {
-        lang,
-        title,
-        elements: new Set(elements),
+        lang: 'pt-BR',
+        title: 'Stroop Online UFPA - Pesquisa em Neurociência Cognitiva',
       },
     }
   } catch (e: any) {
