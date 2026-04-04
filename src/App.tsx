@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import {ChevronRight, CheckCircle, Download, AlertCircle, Lock, Globe} from 'lucide-react'
 
 /* ===================== TIPOS ===================== */
@@ -25,11 +25,6 @@ interface TrialData {
   timestamp: string
 }
 
-interface DemographicData {
-  age: number
-  gender: string
-}
-
 interface StroopTrial {
   word: string
   color: string
@@ -47,17 +42,62 @@ const ITI_MS = 500
 const LAB_PASSWORD = 'stroop3laps2026'
 
 // IMPORTANTE: Substituir pela URL do Google Apps Script após deploy
-const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzIup_FP4wEz-S1Ib17Yh5m6Nb9NGoIz-tMofNtcCHAIE4OTXOA07G0AxpDGWOswT3tMg/exec'
+const GOOGLE_SCRIPT_URL = 'YOUR_GOOGLE_SCRIPT_URL_HERE'
 const TCLE_DOWNLOAD_URL = 'https://drive.google.com/file/d/1aYWCp-0LnoRaFPmdZiuzPQh08AA1pw0I/view?usp=sharing'
 
+/* ===================== HELPERS ===================== */
+const generateParticipantId = (first: string, last: string): string => {
+  const firstInitial = first.charAt(0).toUpperCase()
+  const lastInitial = last.charAt(0).toUpperCase()
+  const randomNumbers = Math.floor(1000 + Math.random() * 9000).toString()
+  return `${firstInitial}${lastInitial}-${randomNumbers}`
+}
+
+const generateLabCode = (): string => {
+  const a = String.fromCharCode(65 + Math.floor(Math.random() * 26))
+  const b = String.fromCharCode(65 + Math.floor(Math.random() * 26))
+  return `${a}${b}-${Math.floor(1000 + Math.random() * 9000)}`
+}
+
+const generateTrials = (n: number): StroopTrial[] => {
+  const arr: StroopTrial[] = []
+  for (let i = 0; i < n; i++) {
+    const congruent = Math.random() < 0.5
+    const w = Math.floor(Math.random() * WORDS.length)
+    let c = congruent ? w : Math.floor(Math.random() * COLORS.length)
+    if (!congruent) {
+      while (c === w) c = Math.floor(Math.random() * COLORS.length)
+    }
+    arr.push({ word: WORDS[w], color: COLORS[c], congruent })
+  }
+  return arr.sort(() => Math.random() - 0.5)
+}
+
+const detectDevice = (): string => {
+  const ua = navigator.userAgent
+  if ((navigator as any).userAgentData?.mobile) {
+    const isTabletUA = /(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)
+    return isTabletUA ? 'Tablet' : 'Smartphone'
+  }
+  const isIPad = /Macintosh/i.test(ua) && navigator.maxTouchPoints > 1
+  const isMobileRegex = /Android|webOS|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua)
+  const isTabletRegex = /(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)
+  if (isIPad || isTabletRegex) return 'Tablet'
+  if (isMobileRegex) return 'Smartphone'
+  return 'Desktop/Laptop'
+}
+
 /* ===================== APP ===================== */
+type Phase = 'mode-selection' | 'lab-auth' | 'participant-code' | 'demographics' | 'consent' | 'instructions' | 'practice' | 'start-experiment' | 'experiment' | 'iti' | 'interblock' | 'finish'
+
 const App: React.FC = () => {
-  const [phase, setPhase] = useState<'mode-selection' | 'lab-auth' | 'participant-code' | 'demographics' | 'consent' | 'instructions' | 'practice' | 'start-experiment' | 'experiment' | 'iti' | 'interblock' | 'finish'>('mode-selection')
+  const [phase, setPhase] = useState<Phase>('mode-selection')
   const [mode, setMode] = useState<'lab' | 'remote' | null>(null)
   const [labPassword, setLabPassword] = useState('')
   const [participantId, setParticipantId] = useState('')
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
+  const [previewCode, setPreviewCode] = useState('')
   const [deviceType, setDeviceType] = useState('')
   const [age, setAge] = useState('')
   const [gender, setGender] = useState('')
@@ -71,123 +111,127 @@ const App: React.FC = () => {
   const [dataSent, setDataSent] = useState(false)
   const [passwordError, setPasswordError] = useState(false)
   const onsetRef = useRef<number | null>(null)
+  const dataRef = useRef<TrialData[]>([])
+  const blocksRef = useRef<StroopTrial[][]>([])
+  const blockRef = useRef(0)
+  const trialInBlockRef = useRef(0)
+  const globalTrialRef = useRef(0)
+  const isPracticeRef = useRef(false)
+  const practiceTrialsRef = useRef<StroopTrial[]>([])
+
+  // Sync refs
+  useEffect(() => { dataRef.current = data }, [data])
+  useEffect(() => { blocksRef.current = blocks }, [blocks])
+  useEffect(() => { blockRef.current = block }, [block])
+  useEffect(() => { trialInBlockRef.current = trialInBlock }, [trialInBlock])
+  useEffect(() => { globalTrialRef.current = globalTrial }, [globalTrial])
+  useEffect(() => { isPracticeRef.current = isPractice }, [isPractice])
+  useEffect(() => { practiceTrialsRef.current = practiceTrials }, [practiceTrials])
 
   /* ===================== DETECÇÃO DE DISPOSITIVO ===================== */
   useEffect(() => {
-    const detectDevice = (): string => {
-      const ua = navigator.userAgent
-      if ((navigator as any).userAgentData?.mobile) {
-        const isTabletUA = /(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)
-        return isTabletUA ? 'Tablet' : 'Smartphone'
-      }
-      const isIPad = /Macintosh/i.test(ua) && navigator.maxTouchPoints > 1
-      const isMobileRegex = /Android|webOS|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua)
-      const isTabletRegex = /(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)
-      if (isIPad || isTabletRegex) return 'Tablet'
-      if (isMobileRegex) return 'Smartphone'
-      return 'Desktop/Laptop'
-    }
     setDeviceType(detectDevice())
   }, [])
 
-  /* ===================== GERAÇÃO DE CÓDIGO ===================== */
-  const generateParticipantId = (first: string, last: string): string => {
-    const firstInitial = first.charAt(0).toUpperCase()
-    const lastInitial = last.charAt(0).toUpperCase()
-    const randomNumbers = Math.floor(1000 + Math.random() * 9000).toString()
-    return `${firstInitial}${lastInitial}-${randomNumbers}`
-  }
-
-  /* ===================== GERAÇÃO DE TRIALS ===================== */
-  const generateTrials = (n: number): StroopTrial[] => {
-    const arr: StroopTrial[] = []
-    for (let i = 0; i < n; i++) {
-      const congruent = Math.random() < 0.5
-      const w = Math.floor(Math.random() * WORDS.length)
-      let c = Math.floor(Math.random() * COLORS.length)
-      if (!congruent) {
-        while (c === w) c = Math.floor(Math.random() * COLORS.length)
-      }
-      arr.push({ word: WORDS[w], color: COLORS[c], congruent })
-    }
-    return arr.sort(() => Math.random() - 0.5)
-  }
-
-  /* ===================== FLUXO - PRACTICE ===================== */
+  /* ===================== GERAR CÓDIGO LAB ===================== */
   useEffect(() => {
-    if (phase === 'practice' && practiceTrials.length === 0) {
-      setPracticeTrials(generateTrials(PRACTICE_TRIALS))
-      setTrialInBlock(0)
-      setIsPractice(true)
-      startTrial()
+    if (mode === 'lab' && !participantId) {
+      setParticipantId(generateLabCode())
     }
-  }, [phase, practiceTrials.length])
+  }, [mode, participantId])
 
-  /* ===================== FLUXO - EXPERIMENT ===================== */
+  /* ===================== GERAR PREVIEW CODE ===================== */
   useEffect(() => {
-    if (phase === 'experiment' && blocks.length === 0 && !isPractice) {
-      const bs: StroopTrial[][] = []
-      for (let b = 0; b < N_BLOCKS; b++) {
-        bs.push(generateTrials(TRIALS_PER_BLOCK))
-      }
-      setBlocks(bs)
-      setBlock(0)
-      setTrialInBlock(0)
-      setGlobalTrial(0)
-      startTrial()
+    if (firstName.trim() && lastName.trim() && !previewCode) {
+      setPreviewCode(generateParticipantId(firstName, lastName))
     }
-  }, [phase, blocks.length, isPractice])
+  }, [firstName, lastName, previewCode])
 
   /* ===================== INICIAR TRIAL ===================== */
-  const startTrial = () => {
+  const startTrial = useCallback(() => {
     onsetRef.current = performance.now()
-  }
+  }, [])
 
-  /* ===================== FLUXO - DEADLINE ===================== */
-  useEffect(() => {
-    if (phase === 'experiment' || phase === 'practice') {
-      const t = setTimeout(() => {
-        if (onsetRef.current) {
-          registerResponse(null)
-        }
-      }, DEADLINE_MS)
-      return () => clearTimeout(t)
+  /* ===================== ENVIO DE DADOS ===================== */
+  const sendData = useCallback(async (finalData: TrialData[]) => {
+    try {
+      await fetch(GOOGLE_SCRIPT_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          participantId,
+          mode,
+          deviceType,
+          demographics: { age: parseInt(age), gender },
+          data: finalData,
+        }),
+      })
+      setDataSent(true)
+    } catch (error) {
+      console.error('Erro ao enviar dados:', error)
+      setDataSent(false)
     }
-  }, [phase, trialInBlock, isPractice])
+  }, [participantId, mode, deviceType, age, gender])
 
-  /* ===================== FLUXO - ITI ===================== */
-  useEffect(() => {
-    if (phase === 'iti') {
-      const t = setTimeout(() => {
-        advance()
-      }, ITI_MS)
-      return () => clearTimeout(t)
+  /* ===================== AVANÇAR ===================== */
+  const advance = useCallback(() => {
+    if (isPracticeRef.current) {
+      if (trialInBlockRef.current + 1 < PRACTICE_TRIALS) {
+        setTrialInBlock(t => t + 1)
+        setPhase('practice')
+        setTimeout(() => { onsetRef.current = performance.now() }, 0)
+      } else {
+        setIsPractice(false)
+        setPhase('start-experiment')
+      }
+    } else {
+      if (trialInBlockRef.current + 1 < TRIALS_PER_BLOCK) {
+        setTrialInBlock(t => t + 1)
+        setGlobalTrial(g => g + 1)
+        setPhase('experiment')
+        setTimeout(() => { onsetRef.current = performance.now() }, 0)
+      } else if (blockRef.current + 1 < N_BLOCKS) {
+        setBlock(b => b + 1)
+        setTrialInBlock(0)
+        setGlobalTrial(g => g + 1)
+        setPhase('interblock')
+      } else {
+        setPhase('finish')
+        sendData(dataRef.current)
+      }
     }
-  }, [phase])
+  }, [sendData])
 
   /* ===================== RESPOSTA ===================== */
-  const registerResponse = (response: boolean | null) => {
+  const registerResponse = useCallback((response: boolean | null) => {
     if (!onsetRef.current) return
     const rt = performance.now() - onsetRef.current
     onsetRef.current = null
 
-    if (isPractice) {
+    if (isPracticeRef.current) {
       setPhase('iti')
       return
     }
 
-    const trial = blocks[block][trialInBlock]
-    const prev = data[data.length - 1]
+    const currentBlocks = blocksRef.current
+    const currentBlock = blockRef.current
+    const currentTrialInBlock = trialInBlockRef.current
+    const currentGlobalTrial = globalTrialRef.current
+    const trial = currentBlocks[currentBlock]?.[currentTrialInBlock]
+    if (!trial) return
+
+    const prev = dataRef.current[dataRef.current.length - 1]
     const accuracy = response !== null && response === trial.congruent
 
     const record: TrialData = {
       participantId,
       mode: mode!,
       deviceType,
-      block,
-      trialInBlock,
-      globalTrial,
-      x: trialInBlock / (TRIALS_PER_BLOCK - 1),
+      block: currentBlock,
+      trialInBlock: currentTrialInBlock,
+      globalTrial: currentGlobalTrial,
+      x: currentTrialInBlock / (TRIALS_PER_BLOCK - 1),
       word: trial.word,
       color: trial.color,
       congruent: trial.congruent,
@@ -205,58 +249,55 @@ const App: React.FC = () => {
 
     setData(d => [...d, record])
     setPhase('iti')
-  }
+  }, [participantId, mode, deviceType])
 
-  /* ===================== AVANÇAR ===================== */
-  const advance = () => {
-    if (isPractice) {
-      if (trialInBlock + 1 < PRACTICE_TRIALS) {
-        setTrialInBlock(t => t + 1)
-        setPhase('practice')
-        startTrial()
-      } else {
-        setIsPractice(false)
-        setPhase('start-experiment')
-      }
-    } else {
-      if (trialInBlock + 1 < TRIALS_PER_BLOCK) {
-        setTrialInBlock(t => t + 1)
-        setGlobalTrial(g => g + 1)
-        setPhase('experiment')
-        startTrial()
-      } else if (block + 1 < N_BLOCKS) {
-        setBlock(b => b + 1)
-        setTrialInBlock(0)
-        setGlobalTrial(g => g + 1)
-        setPhase('interblock')
-      } else {
-        setPhase('finish')
-        sendData()
-      }
+  /* ===================== FLUXO - PRACTICE ===================== */
+  useEffect(() => {
+    if (phase === 'practice' && practiceTrials.length === 0) {
+      const trials = generateTrials(PRACTICE_TRIALS)
+      setPracticeTrials(trials)
+      setTrialInBlock(0)
+      setIsPractice(true)
+      setTimeout(() => { onsetRef.current = performance.now() }, 0)
     }
-  }
+  }, [phase, practiceTrials.length])
 
-  /* ===================== ENVIO DE DADOS ===================== */
-  const sendData = async () => {
-    try {
-      await fetch(GOOGLE_SCRIPT_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          participantId,
-          mode,
-          deviceType,
-          demographics: { age: parseInt(age), gender },
-          data,
-        }),
-      })
-      setDataSent(true)
-    } catch (error) {
-      console.error('Erro ao enviar dados:', error)
-      setDataSent(false)
+  /* ===================== FLUXO - EXPERIMENT ===================== */
+  useEffect(() => {
+    if (phase === 'experiment' && blocks.length === 0 && !isPractice) {
+      const bs: StroopTrial[][] = []
+      for (let b = 0; b < N_BLOCKS; b++) {
+        bs.push(generateTrials(TRIALS_PER_BLOCK))
+      }
+      setBlocks(bs)
+      setBlock(0)
+      setTrialInBlock(0)
+      setGlobalTrial(0)
+      setTimeout(() => { onsetRef.current = performance.now() }, 0)
     }
-  }
+  }, [phase, blocks.length, isPractice])
+
+  /* ===================== FLUXO - DEADLINE ===================== */
+  useEffect(() => {
+    if (phase === 'experiment' || phase === 'practice') {
+      const t = setTimeout(() => {
+        if (onsetRef.current) {
+          registerResponse(null)
+        }
+      }, DEADLINE_MS)
+      return () => clearTimeout(t)
+    }
+  }, [phase, trialInBlock, isPractice, registerResponse])
+
+  /* ===================== FLUXO - ITI ===================== */
+  useEffect(() => {
+    if (phase === 'iti') {
+      const t = setTimeout(() => {
+        advance()
+      }, ITI_MS)
+      return () => clearTimeout(t)
+    }
+  }, [phase, advance])
 
   /* ===================== TECLADO ===================== */
   useEffect(() => {
@@ -271,7 +312,7 @@ const App: React.FC = () => {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [phase, block, trialInBlock, isPractice, blocks, data])
+  }, [phase, registerResponse])
 
   /* ===================== TRIAL ATUAL ===================== */
   const getCurrentTrial = (): StroopTrial | null => {
@@ -305,12 +346,6 @@ const App: React.FC = () => {
     }
   }
 
-  const handleParticipantCode = () => {
-    if (participantId.trim()) {
-      setPhase('demographics')
-    }
-  }
-
   /* ===================== RENDER ===================== */
 
   /* SELEÇÃO DE MODO */
@@ -319,13 +354,11 @@ const App: React.FC = () => {
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex flex-col items-center justify-center px-4 py-8">
         <div className="max-w-4xl w-full space-y-8">
           <div className="text-center space-y-4">
-            <img 
-              src="https://www.laps.ufpa.br/assets/img/laps_logo.png" 
-              alt="Logo LaPS - UFPA" 
-              className="h-24 mx-auto object-contain"
-            />
+            <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-gradient-to-br from-blue-600 to-blue-800 text-white text-3xl font-bold shadow-lg">
+              S
+            </div>
             <h1 className="text-4xl font-bold text-slate-800">Experimento Stroop Online</h1>
-            <p className="text-xl text-slate-600">Laboratório de Processamento de Sinais (LaPS) - UFPA</p>
+            <p className="text-xl text-slate-600">Laboratório de Processamento de Sinais (LaPS) – UFPA</p>
             <p className="text-lg text-slate-500">Pesquisa em Neurociência Cognitiva</p>
           </div>
 
@@ -398,7 +431,7 @@ const App: React.FC = () => {
               }}
               placeholder="Senha de acesso"
               className="w-full px-4 py-3 border-2 border-slate-300 rounded-lg focus:border-blue-500 focus:outline-none text-lg"
-              onKeyPress={(e) => e.key === 'Enter' && handleLabAuth()}
+              onKeyDown={(e) => e.key === 'Enter' && handleLabAuth()}
             />
             
             {passwordError && (
@@ -416,7 +449,7 @@ const App: React.FC = () => {
             </button>
 
             <button
-              onClick={() => setPhase('mode-selection')}
+              onClick={() => { setPhase('mode-selection'); setMode(null); setLabPassword(''); setPasswordError(false) }}
               className="w-full text-slate-600 hover:text-slate-800 font-medium py-2"
             >
               Voltar
@@ -445,7 +478,7 @@ const App: React.FC = () => {
                 <input
                   type="text"
                   value={firstName}
-                  onChange={(e) => setFirstName(e.target.value)}
+                  onChange={(e) => { setFirstName(e.target.value); setPreviewCode('') }}
                   placeholder="Ex: João"
                   maxLength={20}
                   className="w-full px-4 py-3 border-2 border-slate-300 rounded-lg focus:border-green-500 focus:outline-none"
@@ -456,7 +489,7 @@ const App: React.FC = () => {
                 <input
                   type="text"
                   value={lastName}
-                  onChange={(e) => setLastName(e.target.value)}
+                  onChange={(e) => { setLastName(e.target.value); setPreviewCode('') }}
                   placeholder="Ex: Silva"
                   maxLength={20}
                   className="w-full px-4 py-3 border-2 border-slate-300 rounded-lg focus:border-green-500 focus:outline-none"
@@ -467,14 +500,16 @@ const App: React.FC = () => {
             <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
               <p className="text-sm text-slate-600 mb-2">Seu código de participante será:</p>
               <p className="text-2xl font-mono font-bold text-slate-800">
-                {firstName && lastName ? generateParticipantId(firstName, lastName) : 'XX-0000'}
+                {firstName.trim() && lastName.trim() ? (previewCode || 'XX-0000') : 'XX-0000'}
               </p>
             </div>
 
             <button
               onClick={() => {
                 if (firstName.trim() && lastName.trim()) {
-                  setParticipantId(generateParticipantId(firstName, lastName))
+                  const code = previewCode || generateParticipantId(firstName, lastName)
+                  setParticipantId(code)
+                  setPreviewCode(code)
                   setPhase('demographics')
                 }
               }}
@@ -485,7 +520,7 @@ const App: React.FC = () => {
             </button>
 
             <button
-              onClick={() => setPhase('mode-selection')}
+              onClick={() => { setPhase('mode-selection'); setMode(null); setFirstName(''); setLastName(''); setPreviewCode('') }}
               className="w-full text-slate-600 hover:text-slate-800 font-medium py-2"
             >
               Voltar
@@ -502,22 +537,12 @@ const App: React.FC = () => {
     const isAgeValid = age !== '' && !isNaN(ageNum) && ageNum >= 18
     const isFormValid = isAgeValid && gender !== ''
 
-    // Se modo lab, gerar código automaticamente
-    useEffect(() => {
-      if (mode === 'lab' && !participantId) {
-        const randomFirst = String.fromCharCode(65 + Math.floor(Math.random() * 26))
-        const randomLast = String.fromCharCode(65 + Math.floor(Math.random() * 26))
-        const randomCode = `${randomFirst}${randomLast}-${Math.floor(1000 + Math.random() * 9000)}`
-        setParticipantId(randomCode)
-      }
-    }, [mode, participantId])
-
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center px-4">
         <div className="max-w-2xl w-full bg-white rounded-2xl shadow-lg p-8 space-y-6">
           <div className="text-center space-y-2">
             <h2 className="text-2xl font-bold text-slate-800">Informações Demográficas</h2>
-            {mode === 'lab' && participantId && (
+            {participantId && (
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
                 <p className="text-sm text-blue-700">Código do Participante:</p>
                 <p className="text-xl font-mono font-bold text-blue-800">{participantId}</p>
@@ -774,13 +799,13 @@ const App: React.FC = () => {
               <div className="flex items-center justify-center gap-8 flex-wrap">
                 <div className="text-center">
                   <div className="inline-flex items-center gap-2 bg-slate-600 text-white px-6 py-3 rounded-lg font-semibold mb-2">
-                    ← INCONGRUENTE
+                    &larr; INCONGRUENTE
                   </div>
                   <p className="text-sm text-slate-600">Tecla seta esquerda</p>
                 </div>
                 <div className="text-center">
                   <div className="inline-flex items-center gap-2 bg-slate-600 text-white px-6 py-3 rounded-lg font-semibold mb-2">
-                    CONGRUENTE →
+                    CONGRUENTE &rarr;
                   </div>
                   <p className="text-sm text-slate-600">Tecla seta direita</p>
                 </div>
@@ -827,7 +852,7 @@ const App: React.FC = () => {
             <p className="font-semibold text-blue-800">Lembre-se:</p>
             <ul className="list-disc list-inside space-y-1 text-blue-700">
               <li>Responda o mais rápido e preciso possível</li>
-              <li>Use as teclas ← (incongruente) e → (congruente)</li>
+              <li>Use as teclas &larr; (incongruente) e &rarr; (congruente)</li>
               <li>Ou clique nos botões na tela</li>
             </ul>
           </div>
@@ -874,7 +899,7 @@ const App: React.FC = () => {
           </div>
 
           <button
-            onClick={() => setPhase('experiment')}
+            onClick={() => { setPhase('experiment'); setTimeout(() => { onsetRef.current = performance.now() }, 0) }}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-4 rounded-lg transition-colors duration-200"
           >
             Continuar
@@ -888,18 +913,20 @@ const App: React.FC = () => {
   if (phase === 'iti') {
     return (
       <div className="min-h-screen bg-white flex flex-col items-center justify-center gap-12 px-4">
-        <div className="h-32" />
+        <div className="w-4 h-4 rounded-full bg-slate-400" />
         
         <div className="flex gap-8 items-center justify-center flex-wrap">
           <button
-            className="px-8 py-4 bg-slate-500 text-white text-xl font-semibold rounded-lg cursor-default opacity-50"
+            className="px-8 py-4 bg-slate-400 text-white text-xl font-semibold rounded-lg cursor-default opacity-50"
+            disabled
           >
-            ← INCONGRUENTE
+            &larr; INCONGRUENTE
           </button>
           <button
-            className="px-8 py-4 bg-slate-500 text-white text-xl font-semibold rounded-lg cursor-default opacity-50"
+            className="px-8 py-4 bg-slate-400 text-white text-xl font-semibold rounded-lg cursor-default opacity-50"
+            disabled
           >
-            CONGRUENTE →
+            CONGRUENTE &rarr;
           </button>
         </div>
       </div>
@@ -911,7 +938,7 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen bg-white flex flex-col items-center justify-center gap-12 px-4">
         <div
-          className="text-8xl font-bold"
+          className="text-7xl md:text-8xl font-bold select-none"
           style={{ color: trial.color }}
         >
           {trial.word}
@@ -922,15 +949,19 @@ const App: React.FC = () => {
             onClick={() => registerResponse(false)}
             className="px-8 py-4 bg-slate-600 hover:bg-slate-700 text-white text-xl font-semibold rounded-lg transition-colors duration-150 active:scale-95"
           >
-            ← INCONGRUENTE
+            &larr; INCONGRUENTE
           </button>
           <button
             onClick={() => registerResponse(true)}
             className="px-8 py-4 bg-slate-600 hover:bg-slate-700 text-white text-xl font-semibold rounded-lg transition-colors duration-150 active:scale-95"
           >
-            CONGRUENTE →
+            CONGRUENTE &rarr;
           </button>
         </div>
+
+        {isPractice && (
+          <p className="text-sm text-slate-400">Treino — tentativa {trialInBlock + 1} de {PRACTICE_TRIALS}</p>
+        )}
       </div>
     )
   }
